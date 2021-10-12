@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "MountainServer": {
+      "commandName": "Project",
+      "commandLineArgs": "--debuglogging"
+    }
+  }
+}

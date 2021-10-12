@@ -1,0 +1,181 @@
+import { access, readFile, writeFile } from 'fs/promises';
+import { constants } from 'fs';
+import { createInterface } from 'readline';
+
+const useColors = true;
+const colReset = '\x1b[0m';
+const colRed = '\x1b[31m';
+const colGreen = '\x1b[32m';
+const colYellow = '\x1b[33m';
+const colCyan = '\x1b[36m';
+
+const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+console.log('Minecraft property generator v1.0');
+
+const args = process.argv.slice(2);
+
+begin(args).then(() => {
+    releaseReadline();
+});
+
+async function begin(args) {
+    let blocksPath;
+    if (args.length > 0) {
+        blocksPath = args.join('');
+    } else {
+        blocksPath = await getUserInput('Enter path to blocks.json: ');
+    }
+
+    try {
+        await access(blocksPath, constants.R_OK);
+    } catch {
+        console.error(colorText(`Could not access file at ${blocksPath}`, colRed));
+        return;
+    }
+
+    const receiverModel = {};
+    const processedProperties = new Map();
+
+    let blocks;
+    try {
+        blocks = JSON.parse(await readFile(blocksPath, 'utf-8'));
+    } catch (err) {
+        console.error(err);
+        return;
+    }
+    const keys = Object.keys(blocks);
+
+    console.log(`Loaded ${keys.length} namespaced blocks`);
+
+    console.log('** To prevent property conflicts, you may see a prompt to provide a different name if it has a different number of states.');
+    console.log('** You can get the algorithm to manage this for you by specifiying "auto". If you want control over every single state, specify "manual" next.')
+    const manualMode = (await getUserInput('Select mode (auto/manual): ')).toLowerCase().startsWith('m');
+    console.log(`Running in ${manualMode ? 'manual' : 'automatic'} mode`);
+    
+    let index = -1;
+    let singleState = 0;
+    for (const key of keys) {
+        const block = blocks[key];
+
+        if (block.properties) {
+
+            if (singleState > 0) {
+                console.log(`${singleState} blocks had a single state and were skipped`);
+                singleState = 0;
+            }
+
+            const propertyKeys = Object.keys(block.properties);
+
+            for (const propertyKey of propertyKeys) {
+                index++;
+                const propStates = block.properties[propertyKey].length;
+                
+                let existingSelection;
+                let existingInvalid;
+
+                if (processedProperties.has(propertyKey)) {
+                    let existingProps = processedProperties.get(propertyKey);
+
+                    if (existingProps.length > 0) {
+                        for (const existingProp of existingProps) {
+                            if (existingProp.states === propStates && receiverModel[existingProp.name].states.every(x => block.properties[propertyKey].includes(x))) {
+                                existingSelection = existingProp;
+                                break;
+                            }
+                        }
+                        if (!existingSelection) {
+                            existingInvalid = existingProps[0];
+                            existingSelection = existingInvalid;
+                        }
+                    }
+
+                    if (manualMode || existingInvalid) {
+                        if (existingInvalid) {
+                            console.log(colorText(`Warning: Existing property/properties with same name has different states (existing: ${existingInvalid.states}, next: ${propStates})`, colYellow));
+                            console.log(colorText('You should answer "y" to the next prompt to prevent conflicts.', colYellow));
+                        }
+
+                        const decideSkip = await getUserInput(`[${index}] Block ${colorText(key, colGreen)} has property ${colorText(propertyKey, colCyan)} which is already tracked under ${colorText(existingSelection.name, colCyan)}. Add again? (Y/n): `);
+                        if (decideSkip.toLowerCase() === 'n') {
+                            receiverModel[existingSelection.name].blocks.push(key);
+
+                            continue;
+                        }
+                    } else {
+                        console.log(`[${index}] AUTO: Skipping existing state for block ${colorText(key, colGreen)} with property ${colorText(propertyKey, colCyan)} as ${colorText(existingSelection.name, colCyan)}.`);
+                        receiverModel[existingSelection.name].blocks.push(key);
+                        continue;
+                    }
+                }
+
+                let newPropName = await getUserInput(`[${index}] Block ${colorText(key, colGreen)} has property ${colorText(propertyKey, colCyan)}. Enter new name or press enter to keep: `);
+                if (newPropName === '') {
+                    newPropName = propertyKey;
+                }
+                while (receiverModel[newPropName]) {
+                    newPropName = await getUserInput(colorText(`Error: ${newPropName} already registered. Please choose a different name: `, colRed));
+                }
+
+                let propertyObj = { name: newPropName, states: propStates };
+
+                if (processedProperties.has(propertyKey)) {
+                    let propertyArray = processedProperties.get(propertyKey);
+                    propertyArray.push(propertyObj);
+                } else {
+                    processedProperties.set(propertyKey, [propertyObj]);
+                }
+
+                receiverModel[newPropName] = { native: propertyKey, states: block.properties[propertyKey], blocks: [key] };
+
+                console.log(`Registered ${newPropName} with ${propStates} states`);
+            }
+
+        } else {
+            singleState++;
+            index++;
+        }
+    }
+
+    if (singleState > 0) console.log(`${singleState} blocks had a single state and were skipped`);
+
+    const outString = JSON.stringify(receiverModel);
+
+    console.log('=======================================================');
+    console.log('Finished processing blocks');
+    console.log(`${processedProperties.size} states captured`);
+    console.log('=======================================================');
+
+    let saving = true;
+    while (saving) {
+        const outPath = await getUserInput('Enter output file path (e.g. output.json): ');
+
+        try {
+            await writeFile(outPath, outString);
+            saving = false;
+        } catch (err) {
+            console.error(`Could not write to file: ${err}`);
+        }
+    }
+
+    console.log('Done!');
+
+    releaseReadline();
+}
+
+function getUserInput(prompt) {
+    return new Promise((resolve) => {
+        rl.question(prompt, (answer => resolve(answer)));
+    });
+}
+
+function colorText(str, col) {
+    return useColors ? `${col}${str}${colReset}` : str;
+}
+
+function releaseReadline() {
+    rl.close();
+}
